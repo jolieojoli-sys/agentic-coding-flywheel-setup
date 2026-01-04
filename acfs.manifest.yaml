@@ -1,0 +1,1299 @@
+# ACFS Module Manifest
+# Single source of truth for all tools installed by the Agentic Coding Flywheel Setup
+# Version: 2.0.0 (Schema vNext)
+
+version: 2
+name: agentic_coding_flywheel_setup
+id: acfs
+
+defaults:
+  user: ubuntu
+  workspace_root: /data/projects
+  mode: vibe
+
+modules:
+  # ============================================================
+  # PHASE 1: Base dependencies (apt packages)
+  # ============================================================
+  - id: base.system
+    description: Base packages + sane defaults
+    category: base
+    phase: 1
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [critical]
+    installed_check:
+      run_as: current
+      command: "command -v curl && command -v git && command -v jq"
+    install:
+      - apt-get update -y
+      - apt-get install -y curl git ca-certificates unzip tar xz-utils jq build-essential gnupg lsb-release
+    verify:
+      - curl --version
+      - git --version
+      - jq --version
+      - gpg --version
+
+  # ============================================================
+  # PHASE 2: User normalization (ORCHESTRATION-ONLY)
+  # ============================================================
+  - id: users.ubuntu
+    description: Ensure ubuntu user + passwordless sudo + ssh keys
+    category: users
+    phase: 2
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    generated: false
+    tags: [orchestration, critical]
+    notes:
+      - "Ensure user ubuntu exists with home /home/ubuntu"
+      - "Write /etc/sudoers.d/90-ubuntu-acfs: ubuntu ALL=(ALL) NOPASSWD:ALL"
+      - "Copy authorized_keys from invoking user to /home/ubuntu/.ssh/"
+    install: []
+    verify:
+      - id ubuntu
+      - sudo -n true
+
+  # ============================================================
+  # PHASE 3: Filesystem setup
+  # ============================================================
+  - id: base.filesystem
+    description: Create workspace and ACFS directories
+    category: filesystem
+    phase: 3
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [critical]
+    dependencies:
+      - users.ubuntu
+    installed_check:
+      run_as: target_user
+      command: "test -d /data/projects && test -d ~/.acfs"
+    install:
+      - |
+          # Hardening: refuse to operate on symlinked workspace paths.
+          # Prevents symlink tricks like /data -> / or /data/projects -> /etc.
+          for p in /data /data/projects /data/cache; do
+            if [[ -e "$p" && -L "$p" ]]; then
+              echo "ERROR: Refusing to use symlinked path: $p" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p /data/projects /data/cache
+          chown -h "${TARGET_USER:-ubuntu}:${TARGET_USER:-ubuntu}" /data /data/projects /data/cache
+      - |
+          target_home="${TARGET_HOME:-/home/ubuntu}"
+          if [[ -z "$target_home" || "$target_home" == "/" || "$target_home" != /* ]]; then
+            echo "ERROR: Invalid TARGET_HOME: '${target_home:-<empty>}'" >&2
+            exit 1
+          fi
+          if [[ -e "$target_home/.acfs" && -L "$target_home/.acfs" ]]; then
+            echo "ERROR: Refusing to use symlinked ACFS dir: $target_home/.acfs" >&2
+            exit 1
+          fi
+
+          mkdir -p "$target_home/.acfs"
+          chown -hR "${TARGET_USER:-ubuntu}:${TARGET_USER:-ubuntu}" "$target_home/.acfs"
+    verify:
+      - test -d /data/projects
+      - test -d "${TARGET_HOME:-/home/ubuntu}/.acfs"
+    notes:
+      - "~/.acfs created during filesystem phase"
+
+  # ============================================================
+  # PHASE 4: Shell setup (zsh + oh-my-zsh + p10k)
+  # ============================================================
+  - id: shell.zsh
+    description: Zsh shell package
+    category: shell
+    phase: 4
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [critical, shell-ux]
+    dependencies:
+      - base.system
+      - base.filesystem
+    installed_check:
+      run_as: current
+      command: "command -v zsh"
+    install:
+      - apt-get install -y zsh
+    verify:
+      - zsh --version
+
+  - id: shell.omz
+    description: Oh My Zsh + Powerlevel10k + plugins + ACFS config
+    category: shell
+    phase: 4
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [critical, shell-ux]
+    dependencies:
+      - shell.zsh
+    installed_check:
+      run_as: target_user
+      command: "test -d ~/.oh-my-zsh && test -f ~/.acfs/zsh/acfs.zshrc"
+    verified_installer:
+      tool: ohmyzsh
+      runner: sh
+      args: ["--", "--unattended", "--keep-zshrc"]
+    install:
+      - |
+        # Install Powerlevel10k
+        if [[ ! -d ~/.oh-my-zsh/custom/themes/powerlevel10k ]]; then
+          git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/.oh-my-zsh/custom/themes/powerlevel10k
+        fi
+      - |
+        # Install zsh-autosuggestions
+        if [[ ! -d ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions ]]; then
+          git clone https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions
+        fi
+      - |
+        # Install zsh-syntax-highlighting
+        if [[ ! -d ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting ]]; then
+          git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting
+        fi
+      - |
+        # Install ACFS zshrc
+        ACFS_RAW="${ACFS_RAW:-https://raw.githubusercontent.com/Dicklesworthstone/agentic_coding_flywheel_setup/main}"
+        mkdir -p ~/.acfs/zsh
+        CURL_ARGS=(-fsSL)
+        if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+        fi
+        curl "${CURL_ARGS[@]}" -o ~/.acfs/zsh/acfs.zshrc "${ACFS_RAW}/acfs/zsh/acfs.zshrc"
+      - |
+        # Install pre-configured Powerlevel10k settings (prevents config wizard on first login)
+        ACFS_RAW="${ACFS_RAW:-https://raw.githubusercontent.com/Dicklesworthstone/agentic_coding_flywheel_setup/main}"
+        CURL_ARGS=(-fsSL)
+        if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+        fi
+        curl "${CURL_ARGS[@]}" -o ~/.p10k.zsh "${ACFS_RAW}/acfs/zsh/p10k.zsh"
+      - |
+        # Setup loader .zshrc
+        if [[ -f ~/.zshrc ]] && ! grep -q "ACFS loader" ~/.zshrc; then
+          mv ~/.zshrc ~/.zshrc.bak.$(date +%s)
+        fi
+        echo '# ACFS loader' > ~/.zshrc
+        echo 'source "$HOME/.acfs/zsh/acfs.zshrc"' >> ~/.zshrc
+        echo '' >> ~/.zshrc
+        echo '# User overrides live here forever' >> ~/.zshrc
+        echo '[ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"' >> ~/.zshrc
+      - |
+        # Setup ~/.profile for bash login shells (prevents PATH warnings from installers)
+        if [[ ! -f ~/.profile ]]; then
+          echo '# ~/.profile: executed by bash for login shells' > ~/.profile
+          echo '' >> ~/.profile
+          echo '# User binary paths' >> ~/.profile
+          echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"' >> ~/.profile
+        elif ! grep -q '\.local/bin' ~/.profile; then
+          echo '' >> ~/.profile
+          echo '# Added by ACFS - user binary paths' >> ~/.profile
+          echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"' >> ~/.profile
+        fi
+      - |
+        # Set default shell
+        if [[ "$SHELL" != */zsh ]]; then
+          zsh_path="$(command -v zsh || true)"
+          if [[ -z "$zsh_path" ]]; then
+            echo "WARN: zsh not found; cannot set default shell automatically." >&2
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo chsh -s "$zsh_path" "$(whoami)"
+          else
+            if [[ -t 0 ]]; then
+              if ! chsh -s "$zsh_path"; then
+                echo "WARN: Could not change default shell automatically. Run: chsh -s $zsh_path" >&2
+              fi
+            else
+              echo "WARN: Skipping shell change (no TTY). Run: chsh -s $zsh_path" >&2
+            fi
+          fi
+        fi
+    verify:
+      - test -d ~/.oh-my-zsh
+      - test -f ~/.acfs/zsh/acfs.zshrc
+      - test -f ~/.p10k.zsh
+    notes:
+      - "Oh My Zsh and plugins installed via verified upstream installers"
+      - "acfs.zshrc written from acfs/ assets"
+      - "Pre-configured p10k theme settings prevent wizard on first login"
+
+  # ============================================================
+  # PHASE 5: CLI tools
+  # ============================================================
+  - id: cli.modern
+    description: Modern CLI tools referenced by the zshrc intent
+    category: cli
+    phase: 5
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, cli-modern]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: current
+      command: "command -v rg && command -v tmux && command -v fzf"
+    install:
+      - apt-get install -y ripgrep tmux fzf direnv jq gh git-lfs lsof dnsutils netcat-openbsd strace rsync
+      - apt-get install -y lsd || true
+      - apt-get install -y eza || true
+      - apt-get install -y bat || apt-get install -y batcat || true
+      - apt-get install -y fd-find || true
+      - apt-get install -y btop || true
+      - apt-get install -y dust || true
+      - apt-get install -y neovim || true
+      - apt-get install -y docker.io docker-compose-plugin || true
+      - apt-get install -y lazygit || true
+      - apt-get install -y lazydocker || true
+    verify:
+      - rg --version
+      - tmux -V
+      - fzf --version
+      - gh --version
+      - git-lfs version
+      - rsync --version
+      - strace --version
+      - command -v lsof
+      - command -v dig
+      - command -v nc
+      - command -v lsd || command -v eza || true
+
+  # Network tools (still Phase 5)
+  - id: network.tailscale
+    description: Zero-config mesh VPN for secure remote VPS access
+    category: network
+    phase: 5
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [networking, vpn, security, google-sso]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: current
+      command: "command -v tailscale"
+    install:
+      - |
+        # Add Tailscale apt repository
+        DISTRO_CODENAME=$(lsb_release -cs 2>/dev/null || echo "jammy")
+        # Map newer Ubuntu codenames to supported ones
+        case "$DISTRO_CODENAME" in
+          oracular|plucky|questing) DISTRO_CODENAME="noble" ;;
+        esac
+        CURL_ARGS=(-fsSL)
+        if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+        fi
+        curl "${CURL_ARGS[@]}" "https://pkgs.tailscale.com/stable/ubuntu/${DISTRO_CODENAME}.noarmor.gpg" \
+          | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+        echo "deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/ubuntu ${DISTRO_CODENAME} main" \
+          | tee /etc/apt/sources.list.d/tailscale.list
+        apt-get update
+        apt-get install -y tailscale
+        systemctl enable tailscaled
+    verify:
+      - tailscale version
+      - systemctl is-enabled tailscaled
+    docs_url: https://tailscale.com/kb/
+    post_install_message: |
+      Tailscale installed! To connect your VPS to your Tailscale network:
+        sudo tailscale up
+      Then log in with your Google account at the URL shown.
+      Once connected, you can access your VPS via its Tailscale IP or hostname.
+
+  # ============================================================
+  # PHASE 6: Language runtimes
+  # ============================================================
+  - id: lang.bun
+    description: Bun runtime for JS tooling and global CLIs
+    category: lang
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [critical, runtime]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.bun/bin/bun"
+    verified_installer:
+      tool: bun
+      runner: bash
+    install: []
+    verify:
+      - ~/.bun/bin/bun --version
+
+  - id: lang.uv
+    description: uv Python tooling (fast venvs)
+    category: lang
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [critical, runtime]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.local/bin/uv"
+    verified_installer:
+      tool: uv
+      runner: sh
+    install: []
+    verify:
+      - ~/.local/bin/uv --version
+
+  - id: lang.rust
+    description: Rust nightly + cargo
+    category: lang
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [critical, runtime]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.cargo/bin/cargo"
+    verified_installer:
+      tool: rust
+      runner: sh
+      args: ["-s", "--", "-y", "--default-toolchain", "nightly"]
+    install: []
+    verify:
+      - ~/.cargo/bin/cargo --version
+      - ~/.cargo/bin/rustup show | grep -q nightly
+
+  - id: lang.go
+    description: Go toolchain
+    category: lang
+    phase: 6
+    run_as: root
+    optional: false
+    enabled_by_default: true
+    tags: [critical, runtime]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: current
+      command: "command -v go"
+    install:
+      - apt-get install -y golang-go
+    verify:
+      - go version
+
+  - id: lang.nvm
+    description: nvm + latest Node.js
+    category: lang
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [critical, runtime]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      # Check nvm exists AND at least one node version is installed
+      # Can't use 'command -v node' because nvm.sh isn't sourced in this context
+      command: "test -d ~/.nvm && ls ~/.nvm/versions/node/ 2>/dev/null | grep -q ."
+    verified_installer:
+      tool: nvm
+      runner: bash
+    install:
+      # After nvm is installed, source it and install latest Node.js
+      - |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install node
+        nvm alias default node
+    verify:
+      - |
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        node --version
+
+  # Additional CLI tools in phase 6
+  - id: tools.atuin
+    description: Atuin shell history (Ctrl-R superpowers)
+    category: tools
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, shell-ux]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.atuin/bin/atuin"
+    verified_installer:
+      tool: atuin
+      runner: sh
+    install: []
+    verify:
+      - ~/.atuin/bin/atuin --version
+
+  - id: tools.zoxide
+    description: Zoxide (better cd)
+    category: tools
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, shell-ux]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "command -v zoxide"
+    verified_installer:
+      tool: zoxide
+      runner: sh
+    install: []
+    verify:
+      - command -v zoxide
+
+  - id: tools.ast_grep
+    description: ast-grep (used by UBS for syntax-aware scanning)
+    category: tools
+    phase: 6
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.rust
+    installed_check:
+      run_as: target_user
+      command: "command -v sg"
+    install:
+      - ~/.cargo/bin/cargo install ast-grep --locked
+    verify:
+      - sg --version
+
+  # ============================================================
+  # PHASE 7: Coding agents
+  # ============================================================
+  - id: agents.claude
+    description: Claude Code
+    category: agents
+    phase: 7
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, agent]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.local/bin/claude"
+    verified_installer:
+      tool: claude
+      runner: bash
+      args: ["stable"]
+    install: []
+    verify:
+      - ~/.local/bin/claude --version || ~/.local/bin/claude --help
+    notes:
+      - "Uses native installer with built-in 'claude update' command"
+      - "Binary installed to ~/.local/bin/claude"
+
+  - id: agents.codex
+    description: OpenAI Codex CLI
+    category: agents
+    phase: 7
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, agent]
+    dependencies:
+      - lang.bun
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.local/bin/codex"
+    install:
+      # Install via bun, then create wrapper that uses bun as runtime (faster than node)
+      # Use --trust to allow postinstall scripts
+      - ~/.bun/bin/bun install -g --trust @openai/codex@latest
+      - |
+        mkdir -p ~/.local/bin
+        cat > ~/.local/bin/codex << 'WRAPPER'
+        #!/bin/bash
+        exec ~/.bun/bin/bun ~/.bun/bin/codex "$@"
+        WRAPPER
+        chmod +x ~/.local/bin/codex
+    verify:
+      - ~/.local/bin/codex --version || ~/.local/bin/codex --help
+
+  - id: agents.gemini
+    description: Google Gemini CLI
+    category: agents
+    phase: 7
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, agent]
+    dependencies:
+      - lang.bun
+    installed_check:
+      run_as: target_user
+      command: "test -x ~/.local/bin/gemini"
+    install:
+      # Install via bun, then create wrapper that uses bun as runtime (faster than node)
+      # Use --trust to allow postinstall scripts
+      - ~/.bun/bin/bun install -g --trust @google/gemini-cli@latest
+      - |
+        mkdir -p ~/.local/bin
+        cat > ~/.local/bin/gemini << 'WRAPPER'
+        #!/bin/bash
+        exec ~/.bun/bin/bun ~/.bun/bin/gemini "$@"
+        WRAPPER
+        chmod +x ~/.local/bin/gemini
+    verify:
+      - ~/.local/bin/gemini --version || ~/.local/bin/gemini --help
+
+  # ============================================================
+  # PHASE 8: Cloud & database tools
+  # ============================================================
+  - id: tools.vault
+    description: HashiCorp Vault CLI
+    category: tools
+    phase: 8
+    run_as: root
+    optional: true
+    enabled_by_default: false
+    tags: [optional, cloud]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: current
+      command: "command -v vault"
+    install:
+      - |
+        # HashiCorp doesn't always publish packages for newest Ubuntu versions.
+        # Fall back to noble (24.04 LTS) if the current codename isn't supported.
+        CODENAME=$(lsb_release -cs 2>/dev/null || echo "noble")
+
+        CURL_ARGS=(-fsSL)
+        CURL_CHECK_ARGS=(-fsSI)
+        if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+          CURL_CHECK_ARGS=(--proto '=https' --proto-redir '=https' -fsSI)
+        fi
+
+        if ! curl "${CURL_CHECK_ARGS[@]}" "https://apt.releases.hashicorp.com/dists/${CODENAME}/main/binary-amd64/Packages" >/dev/null 2>&1; then
+          CODENAME="noble"
+        fi
+
+        curl "${CURL_ARGS[@]}" https://apt.releases.hashicorp.com/gpg \
+          | gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com ${CODENAME} main" \
+          > /etc/apt/sources.list.d/hashicorp.list
+        apt-get update && apt-get install -y vault
+    verify:
+      - vault --version
+    notes:
+      - "Uses official HashiCorp apt repository (GPG-signed)"
+
+  - id: db.postgres18
+    description: PostgreSQL 18
+    category: db
+    phase: 8
+    run_as: root
+    optional: true
+    enabled_by_default: false
+    tags: [optional, database]
+    dependencies:
+      - base.system
+    installed_check:
+      run_as: current
+      command: "command -v psql"
+    install:
+      - |
+        mkdir -p /etc/apt/keyrings
+        CURL_ARGS=(-fsSL)
+        if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+        fi
+        curl "${CURL_ARGS[@]}" https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+          | gpg --batch --yes --dearmor -o /etc/apt/keyrings/postgresql.gpg
+        CODENAME=$(lsb_release -cs 2>/dev/null || echo "noble")
+        case "$CODENAME" in
+          oracular|plucky|questing) CODENAME="noble" ;;
+        esac
+        echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt ${CODENAME}-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list
+      - apt-get update
+      - apt-get install -y postgresql-18
+    verify:
+      - psql --version
+      - systemctl status postgresql --no-pager || true
+    notes:
+      - "Uses official PGDG apt repository"
+
+  - id: cloud.wrangler
+    description: Cloudflare Wrangler CLI
+    category: cloud
+    phase: 8
+    run_as: target_user
+    optional: true
+    enabled_by_default: false
+    tags: [optional, cloud]
+    dependencies:
+      - lang.bun
+    installed_check:
+      run_as: target_user
+      command: "command -v wrangler"
+    install:
+      # Use --trust to allow postinstall scripts (downloads native binary)
+      - ~/.bun/bin/bun install -g --trust wrangler
+    verify:
+      - wrangler --version
+
+  - id: cloud.supabase
+    description: Supabase CLI
+    category: cloud
+    phase: 8
+    run_as: target_user
+    optional: true
+    enabled_by_default: false
+    tags: [optional, cloud]
+    dependencies:
+      - base.system
+      - base.filesystem
+    installed_check:
+      run_as: target_user
+      command: "command -v supabase"
+    install:
+      # Verified GitHub release binary (checksum from official release checksums file).
+      - |
+        # Install Supabase CLI from GitHub release (verified via sha256 checksums)
+        arch=""
+        case "$(uname -m)" in
+          x86_64) arch="amd64" ;;
+          aarch64|arm64) arch="arm64" ;;
+          *)
+            echo "Supabase CLI: unsupported architecture ($(uname -m))" >&2
+            exit 1
+            ;;
+        esac
+
+        CURL_ARGS=(-fsSL)
+        if command -v curl >/dev/null 2>&1 && curl --help all 2>/dev/null | grep -q -- '--proto'; then
+          CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+        fi
+
+        release_url="$(curl "${CURL_ARGS[@]}" -o /dev/null -w '%{url_effective}\n' "https://github.com/supabase/cli/releases/latest" 2>/dev/null | tail -n1)" || true
+        tag="${release_url##*/}"
+        if [[ -z "$tag" ]] || [[ "$tag" != v* ]]; then
+          echo "Supabase CLI: failed to resolve latest release tag" >&2
+          exit 1
+        fi
+
+        version="${tag#v}"
+        base_url="https://github.com/supabase/cli/releases/download/${tag}"
+        tarball="supabase_linux_${arch}.tar.gz"
+        checksums="supabase_${version}_checksums.txt"
+
+        tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/acfs-supabase.XXXXXX" 2>/dev/null)" || tmp_dir=""
+        tmp_tgz="$(mktemp "${TMPDIR:-/tmp}/acfs-supabase.tgz.XXXXXX" 2>/dev/null)" || tmp_tgz=""
+        tmp_checksums="$(mktemp "${TMPDIR:-/tmp}/acfs-supabase.sha.XXXXXX" 2>/dev/null)" || tmp_checksums=""
+
+        if [[ -z "$tmp_dir" ]] || [[ -z "$tmp_tgz" ]] || [[ -z "$tmp_checksums" ]]; then
+          echo "Supabase CLI: failed to create temp files" >&2
+          exit 1
+        fi
+
+        curl "${CURL_ARGS[@]}" -o "$tmp_tgz" "${base_url}/${tarball}"
+        curl "${CURL_ARGS[@]}" -o "$tmp_checksums" "${base_url}/${checksums}"
+
+        expected_sha="$(awk -v tb="$tarball" '$2 == tb {print $1; exit}' "$tmp_checksums" 2>/dev/null)"
+        if [[ -z "$expected_sha" ]]; then
+          echo "Supabase CLI: checksum entry not found for ${tarball}" >&2
+          exit 1
+        fi
+
+        actual_sha=""
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual_sha="$(sha256sum "$tmp_tgz" | awk '{print $1}')"
+        elif command -v shasum >/dev/null 2>&1; then
+          actual_sha="$(shasum -a 256 "$tmp_tgz" | awk '{print $1}')"
+        else
+          echo "Supabase CLI: no SHA256 tool available (need sha256sum or shasum)" >&2
+          exit 1
+        fi
+
+        if [[ -z "$actual_sha" ]] || [[ "$actual_sha" != "$expected_sha" ]]; then
+          echo "Supabase CLI: checksum mismatch" >&2
+          echo "  Expected: $expected_sha" >&2
+          echo "  Actual:   ${actual_sha:-<missing>}" >&2
+          exit 1
+        fi
+
+        if ! tar -xzf "$tmp_tgz" -C "$tmp_dir" --no-same-owner --no-same-permissions supabase 2>/dev/null; then
+          tar -xzf "$tmp_tgz" -C "$tmp_dir" --no-same-owner --no-same-permissions 2>/dev/null || {
+            echo "Supabase CLI: failed to extract tarball" >&2
+            exit 1
+          }
+        fi
+
+        extracted_bin="$tmp_dir/supabase"
+        if [[ ! -f "$extracted_bin" ]]; then
+          extracted_bin="$(find "$tmp_dir" -maxdepth 2 -type f -name supabase -print -quit 2>/dev/null || true)"
+        fi
+        if [[ -z "$extracted_bin" ]] || [[ ! -f "$extracted_bin" ]]; then
+          echo "Supabase CLI: binary not found after extract" >&2
+          exit 1
+        fi
+
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$extracted_bin" "$HOME/.local/bin/supabase"
+
+        if command -v timeout >/dev/null 2>&1; then
+          timeout 5 "$HOME/.local/bin/supabase" --version >/dev/null 2>&1 || {
+            echo "Supabase CLI: installed but failed to run" >&2
+            exit 1
+          }
+        else
+          "$HOME/.local/bin/supabase" --version >/dev/null 2>&1 || {
+            echo "Supabase CLI: installed but failed to run" >&2
+            exit 1
+          }
+        fi
+
+        # Best-effort cleanup
+        rm -f "$tmp_tgz" "$tmp_checksums" "$extracted_bin" 2>/dev/null || true
+        rmdir "$tmp_dir" 2>/dev/null || true
+    verify:
+      - supabase --version
+
+  - id: cloud.vercel
+    description: Vercel CLI
+    category: cloud
+    phase: 8
+    run_as: target_user
+    optional: true
+    enabled_by_default: false
+    tags: [optional, cloud]
+    dependencies:
+      - lang.bun
+    installed_check:
+      run_as: target_user
+      command: "command -v vercel"
+    install:
+      # Use --trust to allow postinstall scripts (downloads native binary)
+      - ~/.bun/bin/bun install -g --trust vercel
+    verify:
+      - vercel --version
+
+  # ============================================================
+  # PHASE 9: Dicklesworthstone stack (all 8 tools)
+  # ============================================================
+  - id: stack.ntm
+    description: Named tmux manager (agent cockpit)
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - cli.modern
+    installed_check:
+      run_as: target_user
+      command: "command -v ntm"
+    verified_installer:
+      tool: ntm
+      runner: bash
+      args: ["--no-shell"]
+    install: []
+    verify:
+      - ntm --help
+
+  - id: stack.mcp_agent_mail
+    description: Like gmail for coding agents; MCP HTTP server + token; installs beads tools
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended, tmux-spawn]
+    dependencies:
+      - lang.bun
+      - lang.uv
+      - cli.modern   # for tmux
+    installed_check:
+      run_as: target_user
+      command: "command -v am"
+    verified_installer:
+      tool: mcp_agent_mail
+      runner: bash
+      args: ["--dir", "${TARGET_HOME:-/home/ubuntu}/mcp_agent_mail", "--yes"]
+      fallback_url: "https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail/main/scripts/install.sh"
+      run_in_tmux: true   # Run in tmux to prevent blocking; server stays running
+    install: []
+    verify:
+      - command -v am
+    notes:
+      - "Runs in tmux session 'acfs-services' to prevent blocking installer"
+      - "Server accessible at http://127.0.0.1:8765 after install"
+
+  - id: stack.ultimate_bug_scanner
+    description: UBS bug scanning (easy-mode)
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.bun
+      - lang.uv
+      - tools.ast_grep
+    installed_check:
+      run_as: target_user
+      command: "command -v ubs"
+    verified_installer:
+      tool: ubs
+      runner: bash
+      args: ["--easy-mode"]
+    install: []
+    verify:
+      - ubs --help
+      - ubs doctor || true
+
+  - id: stack.beads_viewer
+    description: bv TUI for Beads tasks
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.go
+    installed_check:
+      run_as: target_user
+      command: "command -v bv || command -v bd"
+    verified_installer:
+      tool: bv
+      runner: bash
+    install: []
+    verify:
+      - bv --help || bv --version
+
+  - id: stack.cass
+    description: Unified search across agent session history
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.rust
+      - lang.uv
+    installed_check:
+      run_as: target_user
+      command: "command -v cass"
+    verified_installer:
+      tool: cass
+      runner: bash
+      args: ["--easy-mode", "--verify"]
+    install:
+      - |
+        # Install a small compatibility wrapper for older tooling (e.g., NTM v1.2.0)
+        # that expects `cass robot <subcommand>`. Modern CASS uses `cass <subcommand> --robot`.
+        # Best-effort: never fail install if we cannot write the wrapper.
+        # Note: `cass robot --help` may succeed on newer CASS (shows search help),
+        # but that doesn't mean `cass robot search "..."` works. We need to test
+        # an actual subcommand invocation to be sure.
+        if cass robot search --dry-run "acfs-wrapper-test" >/dev/null 2>&1; then
+          exit 0
+        fi
+
+        cass_path="$(command -v cass 2>/dev/null || true)"
+        if [[ -z "$cass_path" ]]; then
+          echo "WARN: cass not found for wrapper setup" >&2
+          exit 0
+        fi
+
+        cass_dir="$(cd "$(dirname "$cass_path")" 2>/dev/null && pwd -P || echo "")"
+        if [[ -z "$cass_dir" ]]; then
+          echo "WARN: could not resolve cass directory for wrapper setup" >&2
+          exit 0
+        fi
+
+        cass_real="${cass_dir}/cass.real"
+
+        # Idempotency: wrapper already installed.
+        if [[ -x "$cass_real" ]] && head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+          exit 0
+        fi
+
+        if [[ ! -f "$cass_path" ]]; then
+          echo "WARN: cass path is not a regular file: $cass_path" >&2
+          exit 0
+        fi
+        if [[ ! -w "$cass_path" ]]; then
+          echo "WARN: cannot write to cass binary path (skipping wrapper): $cass_path" >&2
+          exit 0
+        fi
+
+        # Safety: if cass is already our wrapper but cass.real is missing, do not
+        # "move" the wrapper into place (it would create an infinite exec loop).
+        if [[ ! -e "$cass_real" ]] && head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+          echo "WARN: cass wrapper detected but cass.real is missing; skipping wrapper setup" >&2
+          exit 0
+        fi
+
+        # Move the real binary aside, then install the wrapper at the original path.
+        # Handle both fresh install and the case where CASS was updated (replaced wrapper with new binary).
+        if [[ ! -e "$cass_real" ]]; then
+          # First time: move original binary to cass.real
+          if ! mv "$cass_path" "$cass_real" 2>/dev/null; then
+            echo "WARN: failed to move cass to cass.real (skipping wrapper)" >&2
+            exit 0
+          fi
+          chmod +x "$cass_real" 2>/dev/null || true
+        elif ! head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+          # cass.real exists but current cass is NOT our wrapper.
+          # Only update cass.real if cass is a binary (not a script).
+          # Safety: if it's a script (starts with #!), don't overwrite the real binary.
+          if [[ "$(head -c 2 "$cass_path" 2>/dev/null || true)" == "#!" ]]; then
+            echo "WARN: cass is a script but not our wrapper (skipping cass.real update)" >&2
+          else
+            # cass is a binary - safe to update cass.real
+            if ! mv "$cass_path" "$cass_real" 2>/dev/null; then
+              echo "WARN: failed to update cass.real with new binary (skipping wrapper)" >&2
+              exit 0
+            fi
+            chmod +x "$cass_real" 2>/dev/null || true
+          fi
+        fi
+
+        if ! cat > "$cass_path" <<'EOF'
+        #!/usr/bin/env bash
+        # ACFS CASS WRAPPER (compat): adds `cass robot <subcommand>` support for older NTM.
+        set -euo pipefail
+
+        real="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)/cass.real"
+        if [[ ! -x "$real" ]]; then
+          echo "ERROR: cass.real not found at: $real" >&2
+          exit 127
+        fi
+
+        if [[ $# -gt 0 && "${1:-}" == "robot" ]]; then
+          shift || true
+
+          if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+            cat <<'EOT'
+        Usage: cass robot <subcommand> [args...]
+
+        Compat wrapper installed by ACFS.
+        Translates:
+          cass robot <subcommand> ...  ->  cass <subcommand> ... --robot
+
+        Examples:
+          cass robot search "error handling" --limit 10
+          cass search "error handling" --robot --limit 10
+        EOT
+            exit 0
+          fi
+
+          for arg in "$@"; do
+            if [[ "$arg" == "--robot" ]]; then
+              exec "$real" "$@"
+            fi
+          done
+
+          exec "$real" "$@" --robot
+        fi
+
+        exec "$real" "$@"
+        EOF
+        then
+          echo "WARN: failed to write cass wrapper (skipping)" >&2
+          exit 0
+        fi
+        chmod +x "$cass_path" 2>/dev/null || true
+
+        if ! cass robot search --dry-run "acfs-wrapper-test" >/dev/null 2>&1; then
+          echo "WARN: cass wrapper installed, but cass robot still failing" >&2
+        fi
+
+        exit 0
+    verify:
+      - cass --help || cass --version
+      - cass robot search --dry-run "acfs-wrapper-test" || true
+
+  - id: stack.cm
+    description: Procedural memory for agents (cass-memory)
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.rust
+      - lang.uv
+    installed_check:
+      run_as: target_user
+      command: "command -v cm"
+    verified_installer:
+      tool: cm
+      runner: bash
+      args: ["--easy-mode", "--verify"]
+    install: []
+    verify:
+      - cm --version
+      - cm doctor --json || true
+
+  - id: stack.caam
+    description: Instant auth switching for agent CLIs
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [recommended]
+    dependencies:
+      - lang.bun
+    installed_check:
+      run_as: target_user
+      command: "command -v caam"
+    verified_installer:
+      tool: caam
+      runner: bash
+    install: []
+    verify:
+      - caam status || caam --help
+
+  - id: stack.slb
+    description: Two-person rule for dangerous commands (optional guardrails)
+    category: stack
+    phase: 9
+    run_as: target_user
+    optional: true
+    enabled_by_default: true
+    tags: [optional]
+    dependencies:
+      - lang.go
+    installed_check:
+      run_as: target_user
+      command: "command -v slb"
+    install:
+      # go install fails due to module path mismatch (go.mod says github.com/Dicklesworthstone/slb
+      # but repo is at github.com/Dicklesworthstone/simultaneous_launch_button)
+      # Build from source instead:
+      - |
+        mkdir -p ~/go/bin
+        cd /tmp && rm -rf slb_build
+        git clone --depth 1 https://github.com/Dicklesworthstone/simultaneous_launch_button.git slb_build
+        cd slb_build && go build -o ~/go/bin/slb ./cmd/slb
+        rm -rf /tmp/slb_build
+        # Add ~/go/bin to PATH if not already present
+        if ! grep -q 'export PATH=.*\$HOME/go/bin' ~/.zshrc 2>/dev/null; then
+          echo '' >> ~/.zshrc
+          echo '# Go binaries' >> ~/.zshrc
+          echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
+        fi
+    verify:
+      # Use 'slb' alone (shows quick reference) since --help may have exit code issues
+      # Need to source updated PATH for verification
+      - export PATH="$HOME/go/bin:$PATH" && slb >/dev/null 2>&1 || slb --help >/dev/null 2>&1
+
+  # ============================================================
+  # PHASE 10: Finalization (onboard, doctor, verification)
+  # ============================================================
+  - id: acfs.workspace
+    description: Agent workspace with tmux session and project folder
+    category: acfs
+    phase: 10
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    tags: [workspace, agents]
+    dependencies:
+      - agents.claude
+      - agents.codex
+      - agents.gemini
+      - cli.modern
+    installed_check:
+      run_as: target_user
+      command: "test -d /data/projects/my_first_project"
+    install:
+      - |
+        # Create project directory
+        mkdir -p /data/projects/my_first_project
+        cd /data/projects/my_first_project
+        git init 2>/dev/null || true
+      - |
+        # Create workspace instructions file
+        mkdir -p ~/.acfs
+        printf '%s\n' "" \
+          "  ACFS AGENT WORKSPACE - QUICK REFERENCE" \
+          "  --------------------------------------" \
+          "" \
+          "  RECONNECT AFTER SSH:" \
+          "    tmux attach -t agents    OR just type:  agents" \
+          "" \
+          "  WINDOWS (Ctrl-b + number):" \
+          "    0:welcome  - This instructions window" \
+          "    1:claude   - Claude Code (Anthropic)" \
+          "    2:codex    - Codex CLI (OpenAI)" \
+          "    3:gemini   - Gemini CLI (Google)" \
+          "" \
+          "  TMUX BASICS:" \
+          "    Ctrl-b d        - Detach (keep session running)" \
+          "    Ctrl-b c        - Create new window" \
+          "    Ctrl-b n/p      - Next/previous window" \
+          "    Ctrl-b [0-9]    - Switch to window number" \
+          "" \
+          "  START AN AGENT:" \
+          "    claude          - Start Claude Code" \
+          "    codex           - Start Codex CLI" \
+          "    gemini          - Start Gemini CLI" \
+          "" \
+          "  PROJECT: /data/projects/my_first_project" \
+          "  (Rename with: mv /data/projects/my_first_project /data/projects/NEW_NAME)" \
+          "" > ~/.acfs/workspace-instructions.txt
+      - |
+        # Create tmux session with agent panes (if not already running)
+        SESSION_NAME="agents"
+        if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+          # Create session with first window for instructions
+          tmux new-session -d -s "$SESSION_NAME" -n "welcome" -c /data/projects/my_first_project
+
+          # Add agent windows
+          tmux new-window -t "$SESSION_NAME" -n "claude" -c /data/projects/my_first_project
+          tmux new-window -t "$SESSION_NAME" -n "codex" -c /data/projects/my_first_project
+          tmux new-window -t "$SESSION_NAME" -n "gemini" -c /data/projects/my_first_project
+
+          # Send instructions to welcome window
+          tmux send-keys -t "$SESSION_NAME:welcome" "cat ~/.acfs/workspace-instructions.txt" Enter
+
+          # Select the welcome window
+          tmux select-window -t "$SESSION_NAME:welcome"
+        fi
+      - |
+        # Add agents alias to zshrc.local if not already present
+        if [[ ! -f ~/.zshrc.local ]] || ! grep -q "alias agents=" ~/.zshrc.local; then
+          touch ~/.zshrc.local 2>/dev/null || true
+          echo '' >> ~/.zshrc.local
+          echo '# ACFS agents workspace alias' >> ~/.zshrc.local
+          echo 'alias agents="tmux attach -t agents 2>/dev/null || tmux new-session -s agents -c /data/projects"' >> ~/.zshrc.local
+        fi
+    verify:
+      - test -d /data/projects/my_first_project
+      - grep -q "alias agents=" ~/.zshrc.local || grep -q "alias agents=" ~/.zshrc
+    notes:
+      - "Creates /data/projects/my_first_project as starter project"
+      - "Sets up 'agents' tmux session with windows for each coding agent"
+      - "Adds 'agents' alias for quick reconnection"
+
+  - id: acfs.onboard
+    description: Onboarding TUI tutorial
+    category: acfs
+    phase: 10
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    generated: false
+    tags: [orchestration]
+    notes:
+      - "Install onboard script to ~/.local/bin/onboard"
+    install:
+      - mkdir -p ~/.local/bin
+      - |
+        # Install onboard script
+        if [[ -n "${ACFS_BOOTSTRAP_DIR:-}" ]] && [[ -f "${ACFS_BOOTSTRAP_DIR}/packages/onboard/onboard.sh" ]]; then
+          cp "${ACFS_BOOTSTRAP_DIR}/packages/onboard/onboard.sh" ~/.local/bin/onboard
+        elif [[ -f "packages/onboard/onboard.sh" ]]; then
+          cp "packages/onboard/onboard.sh" ~/.local/bin/onboard
+        else
+          ACFS_RAW="${ACFS_RAW:-https://raw.githubusercontent.com/Dicklesworthstone/agentic_coding_flywheel_setup/main}"
+          CURL_ARGS=(-fsSL)
+          if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+            CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+          fi
+          curl "${CURL_ARGS[@]}" "${ACFS_RAW}/packages/onboard/onboard.sh" -o ~/.local/bin/onboard
+        fi
+        chmod +x ~/.local/bin/onboard
+    verify:
+      - onboard --help || command -v onboard
+
+  - id: acfs.update
+    description: ACFS update command wrapper
+    category: acfs
+    phase: 10
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    generated: false
+    tags: [orchestration]
+    notes:
+      - "Install acfs-update script to ~/.local/bin/acfs-update"
+    install:
+      - mkdir -p ~/.local/bin
+      - |
+        # Install acfs-update wrapper
+        if [[ -n "${ACFS_BOOTSTRAP_DIR:-}" ]] && [[ -f "${ACFS_BOOTSTRAP_DIR}/scripts/acfs-update" ]]; then
+          cp "${ACFS_BOOTSTRAP_DIR}/scripts/acfs-update" ~/.local/bin/acfs-update
+        elif [[ -f "scripts/acfs-update" ]]; then
+          cp "scripts/acfs-update" ~/.local/bin/acfs-update
+        else
+          ACFS_RAW="${ACFS_RAW:-https://raw.githubusercontent.com/Dicklesworthstone/agentic_coding_flywheel_setup/main}"
+          CURL_ARGS=(-fsSL)
+          if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+            CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+          fi
+          curl "${CURL_ARGS[@]}" "${ACFS_RAW}/scripts/acfs-update" -o ~/.local/bin/acfs-update
+        fi
+        chmod +x ~/.local/bin/acfs-update
+    verify:
+      - command -v acfs-update
+
+  - id: acfs.doctor
+    description: ACFS doctor command for health checks
+    category: acfs
+    phase: 10
+    run_as: target_user
+    optional: false
+    enabled_by_default: true
+    generated: false
+    tags: [orchestration]
+    notes:
+      - "Install acfs script to ~/.local/bin/acfs"
+    install:
+      - mkdir -p ~/.local/bin
+      - |
+        # Install acfs CLI (doctor.sh entrypoint)
+        if [[ -n "${ACFS_BOOTSTRAP_DIR:-}" ]] && [[ -f "${ACFS_BOOTSTRAP_DIR}/scripts/lib/doctor.sh" ]]; then
+          cp "${ACFS_BOOTSTRAP_DIR}/scripts/lib/doctor.sh" ~/.local/bin/acfs
+        elif [[ -f "scripts/lib/doctor.sh" ]]; then
+          cp "scripts/lib/doctor.sh" ~/.local/bin/acfs
+        else
+          ACFS_RAW="${ACFS_RAW:-https://raw.githubusercontent.com/Dicklesworthstone/agentic_coding_flywheel_setup/main}"
+          CURL_ARGS=(-fsSL)
+          if curl --help all 2>/dev/null | grep -q -- '--proto'; then
+            CURL_ARGS=(--proto '=https' --proto-redir '=https' -fsSL)
+          fi
+          curl "${CURL_ARGS[@]}" "${ACFS_RAW}/scripts/lib/doctor.sh" -o ~/.local/bin/acfs
+        fi
+        chmod +x ~/.local/bin/acfs
+    verify:
+      - acfs doctor --help || command -v acfs

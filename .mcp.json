@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "quint-code": {
+      "command": "/Users/abdulaziz/.local/bin/quint-code",
+      "args": [
+        "serve"
+      ],
+      "cwd": "/Users/abdulaziz/Downloads/Projects/Agentic Coding Flywheel ",
+      "env": {
+        "QUINT_PROJECT_ROOT": "/Users/abdulaziz/Downloads/Projects/Agentic Coding Flywheel "
+      }
+    }
+  }
+}

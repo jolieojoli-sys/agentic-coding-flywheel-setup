@@ -1,0 +1,878 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091
+# ============================================================
+# AUTO-GENERATED FROM acfs.manifest.yaml - DO NOT EDIT
+# Regenerate: bun run generate (from packages/manifest)
+# ============================================================
+
+set -euo pipefail
+
+# Ensure logging functions available
+ACFS_GENERATED_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# When running a generated installer directly (not sourced by install.sh),
+# set sane defaults and derive ACFS paths from the script location so
+# contract validation passes and local assets are discoverable.
+if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
+    # Match install.sh defaults
+    TARGET_USER="${TARGET_USER:-ubuntu}"
+    MODE="${MODE:-vibe}"
+
+    if [[ -z "${TARGET_HOME:-}" ]]; then
+        if [[ "${TARGET_USER}" == "root" ]]; then
+            TARGET_HOME="/root"
+        elif [[ "$(whoami 2>/dev/null || true)" == "${TARGET_USER}" ]]; then
+            TARGET_HOME="${HOME}"
+        else
+            TARGET_HOME="/home/${TARGET_USER}"
+        fi
+    fi
+
+    # Derive "bootstrap" paths from the repo layout (scripts/generated/.. -> repo root).
+    if [[ -z "${ACFS_BOOTSTRAP_DIR:-}" ]]; then
+        ACFS_BOOTSTRAP_DIR="$(cd "$ACFS_GENERATED_SCRIPT_DIR/../.." && pwd)"
+    fi
+
+    ACFS_LIB_DIR="${ACFS_LIB_DIR:-$ACFS_BOOTSTRAP_DIR/scripts/lib}"
+    ACFS_GENERATED_DIR="${ACFS_GENERATED_DIR:-$ACFS_BOOTSTRAP_DIR/scripts/generated}"
+    ACFS_ASSETS_DIR="${ACFS_ASSETS_DIR:-$ACFS_BOOTSTRAP_DIR/acfs}"
+    ACFS_CHECKSUMS_YAML="${ACFS_CHECKSUMS_YAML:-$ACFS_BOOTSTRAP_DIR/checksums.yaml}"
+    ACFS_MANIFEST_YAML="${ACFS_MANIFEST_YAML:-$ACFS_BOOTSTRAP_DIR/acfs.manifest.yaml}"
+
+    export TARGET_USER TARGET_HOME MODE
+    export ACFS_BOOTSTRAP_DIR ACFS_LIB_DIR ACFS_GENERATED_DIR ACFS_ASSETS_DIR ACFS_CHECKSUMS_YAML ACFS_MANIFEST_YAML
+fi
+if [[ -f "$ACFS_GENERATED_SCRIPT_DIR/../lib/logging.sh" ]]; then
+    source "$ACFS_GENERATED_SCRIPT_DIR/../lib/logging.sh"
+else
+    # Fallback logging functions if logging.sh not found
+    # Progress/status output should go to stderr so stdout stays clean for piping.
+    log_step() { echo "[*] $*" >&2; }
+    log_section() { echo "" >&2; echo "=== $* ===" >&2; }
+    log_success() { echo "[OK] $*" >&2; }
+    log_error() { echo "[ERROR] $*" >&2; }
+    log_warn() { echo "[WARN] $*" >&2; }
+    log_info() { echo "    $*" >&2; }
+fi
+
+# Source install helpers (run_as_*_shell, selection helpers)
+if [[ -f "$ACFS_GENERATED_SCRIPT_DIR/../lib/install_helpers.sh" ]]; then
+    source "$ACFS_GENERATED_SCRIPT_DIR/../lib/install_helpers.sh"
+fi
+
+# Source contract validation
+if [[ -f "$ACFS_GENERATED_SCRIPT_DIR/../lib/contract.sh" ]]; then
+    source "$ACFS_GENERATED_SCRIPT_DIR/../lib/contract.sh"
+fi
+
+# Optional security verification for upstream installer scripts.
+# Scripts that need it should call: acfs_security_init
+ACFS_SECURITY_READY=false
+acfs_security_init() {
+    if [[ "${ACFS_SECURITY_READY}" = "true" ]]; then
+        return 0
+    fi
+
+    local security_lib="$ACFS_GENERATED_SCRIPT_DIR/../lib/security.sh"
+    if [[ ! -f "$security_lib" ]]; then
+        log_error "Security library not found: $security_lib"
+        return 1
+    fi
+
+    # Use ACFS_CHECKSUMS_YAML if set by install.sh bootstrap (overrides security.sh default)
+    if [[ -n "${ACFS_CHECKSUMS_YAML:-}" ]]; then
+        export CHECKSUMS_FILE="${ACFS_CHECKSUMS_YAML}"
+    fi
+
+    # shellcheck source=../lib/security.sh
+    # shellcheck disable=SC1091  # runtime relative source
+    source "$security_lib"
+    load_checksums || { log_error "Failed to load checksums.yaml"; return 1; }
+    ACFS_SECURITY_READY=true
+    return 0
+}
+
+# Category: stack
+# Modules: 8
+
+# Named tmux manager (agent cockpit)
+install_stack_ntm() {
+    local module_id="stack.ntm"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.ntm"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.ntm"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="ntm"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.ntm: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s' '--' '--no-shell'; then
+                            install_success=true
+                        else
+                            log_error "stack.ntm: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.ntm: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.ntm: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.ntm: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.ntm: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.ntm"
+                false
+            fi
+        }; then
+            log_error "stack.ntm: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: ntm --help (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_NTM'
+ntm --help
+INSTALL_STACK_NTM
+        then
+            log_error "stack.ntm: verify failed: ntm --help"
+            return 1
+        fi
+    fi
+
+    log_success "stack.ntm installed"
+}
+
+# Like gmail for coding agents; MCP HTTP server + token; installs beads tools
+install_stack_mcp_agent_mail() {
+    local module_id="stack.mcp_agent_mail"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.mcp_agent_mail"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.mcp_agent_mail"
+    else
+        if ! {
+            # Run installer in detached tmux session (run_in_tmux: true)
+            # This prevents blocking when the installer starts a long-running service
+            local tmux_session="acfs-services"
+
+            # Resolve verified installer URL + checksum (fail closed)
+            local tool="mcp_agent_mail"
+            local url=""
+            local expected_sha256=""
+            if acfs_security_init; then
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.mcp_agent_mail: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+                else
+                    log_error "stack.mcp_agent_mail: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.mcp_agent_mail: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            if [[ -z "$url" ]]; then
+                log_error "stack.mcp_agent_mail: KNOWN_INSTALLERS[$tool] not found"
+                false
+            fi
+            if [[ -z "$expected_sha256" ]]; then
+                log_error "stack.mcp_agent_mail: checksum for '$tool' not found"
+                false
+            fi
+
+            # Download verified installer to a temp file (so tmux can exec it without pipes)
+            local tmp_install
+            tmp_install="$(mktemp "${TMPDIR:-/tmp}/acfs-install-${tool}.XXXXXX" 2>/dev/null)" || tmp_install=""
+            if [[ -z "$tmp_install" ]]; then
+                log_error "Failed to create temp installer for stack.mcp_agent_mail"
+                false
+            fi
+
+            if ! verify_checksum "$url" "$expected_sha256" "$tool" > "$tmp_install"; then
+                rm -f "$tmp_install" 2>/dev/null || true
+                log_error "stack.mcp_agent_mail: installer verification failed"
+                false
+            fi
+            chmod 755 "$tmp_install" 2>/dev/null || true
+
+            # Kill existing session if any (clean slate)
+            run_as_target tmux kill-session -t "$tmux_session" 2>/dev/null || true
+
+            # Create new detached tmux session and run the installer
+            if run_as_target tmux new-session -d -s "$tmux_session" 'bash' "$tmp_install" '--dir' "${TARGET_HOME:-/home/ubuntu}/mcp_agent_mail" '--yes'; then
+                    log_success "stack.mcp_agent_mail installing in tmux session '$tmux_session'"
+                    log_info "Attach with: tmux attach -t $tmux_session"
+                    # Give it a moment to start
+                    sleep 3
+                else
+                    log_warn "stack.mcp_agent_mail tmux installation may have failed"
+                fi
+        }; then
+            log_error "stack.mcp_agent_mail: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify skipped: run_in_tmux installs async in detached tmux session
+    log_info "stack.mcp_agent_mail: installation running in background tmux session"
+    log_info "Attach with: tmux attach -t acfs-services"
+
+    log_success "stack.mcp_agent_mail installed"
+}
+
+# UBS bug scanning (easy-mode)
+install_stack_ultimate_bug_scanner() {
+    local module_id="stack.ultimate_bug_scanner"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.ultimate_bug_scanner"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.ultimate_bug_scanner"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="ubs"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.ultimate_bug_scanner: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s' '--' '--easy-mode'; then
+                            install_success=true
+                        else
+                            log_error "stack.ultimate_bug_scanner: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.ultimate_bug_scanner: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.ultimate_bug_scanner: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.ultimate_bug_scanner: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.ultimate_bug_scanner: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.ultimate_bug_scanner"
+                false
+            fi
+        }; then
+            log_error "stack.ultimate_bug_scanner: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: ubs --help (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_ULTIMATE_BUG_SCANNER'
+ubs --help
+INSTALL_STACK_ULTIMATE_BUG_SCANNER
+        then
+            log_error "stack.ultimate_bug_scanner: verify failed: ubs --help"
+            return 1
+        fi
+    fi
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify (optional): ubs doctor (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_ULTIMATE_BUG_SCANNER'
+ubs doctor
+INSTALL_STACK_ULTIMATE_BUG_SCANNER
+        then
+            log_warn "Optional verify failed: stack.ultimate_bug_scanner"
+        fi
+    fi
+
+    log_success "stack.ultimate_bug_scanner installed"
+}
+
+# bv TUI for Beads tasks
+install_stack_beads_viewer() {
+    local module_id="stack.beads_viewer"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.beads_viewer"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.beads_viewer"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="bv"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.beads_viewer: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s'; then
+                            install_success=true
+                        else
+                            log_error "stack.beads_viewer: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.beads_viewer: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.beads_viewer: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.beads_viewer: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.beads_viewer: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.beads_viewer"
+                false
+            fi
+        }; then
+            log_error "stack.beads_viewer: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: bv --help || bv --version (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_BEADS_VIEWER'
+bv --help || bv --version
+INSTALL_STACK_BEADS_VIEWER
+        then
+            log_error "stack.beads_viewer: verify failed: bv --help || bv --version"
+            return 1
+        fi
+    fi
+
+    log_success "stack.beads_viewer installed"
+}
+
+# Unified search across agent session history
+install_stack_cass() {
+    local module_id="stack.cass"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.cass"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.cass"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="cass"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.cass: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s' '--' '--easy-mode' '--verify'; then
+                            install_success=true
+                        else
+                            log_error "stack.cass: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.cass: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.cass: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.cass: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.cass: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.cass"
+                false
+            fi
+        }; then
+            log_error "stack.cass: verified installer failed"
+            return 1
+        fi
+    fi
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: install: # Install a small compatibility wrapper for older tooling (e.g., NTM v1.2.0) (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CASS'
+# Install a small compatibility wrapper for older tooling (e.g., NTM v1.2.0)
+# that expects `cass robot <subcommand>`. Modern CASS uses `cass <subcommand> --robot`.
+# Best-effort: never fail install if we cannot write the wrapper.
+# Note: `cass robot --help` may succeed on newer CASS (shows search help),
+# but that doesn't mean `cass robot search "..."` works. We need to test
+# an actual subcommand invocation to be sure.
+if cass robot search --dry-run "acfs-wrapper-test" >/dev/null 2>&1; then
+  exit 0
+fi
+
+cass_path="$(command -v cass 2>/dev/null || true)"
+if [[ -z "$cass_path" ]]; then
+  echo "WARN: cass not found for wrapper setup" >&2
+  exit 0
+fi
+
+cass_dir="$(cd "$(dirname "$cass_path")" 2>/dev/null && pwd -P || echo "")"
+if [[ -z "$cass_dir" ]]; then
+  echo "WARN: could not resolve cass directory for wrapper setup" >&2
+  exit 0
+fi
+
+cass_real="${cass_dir}/cass.real"
+
+# Idempotency: wrapper already installed.
+if [[ -x "$cass_real" ]] && head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+  exit 0
+fi
+
+if [[ ! -f "$cass_path" ]]; then
+  echo "WARN: cass path is not a regular file: $cass_path" >&2
+  exit 0
+fi
+if [[ ! -w "$cass_path" ]]; then
+  echo "WARN: cannot write to cass binary path (skipping wrapper): $cass_path" >&2
+  exit 0
+fi
+
+# Safety: if cass is already our wrapper but cass.real is missing, do not
+# "move" the wrapper into place (it would create an infinite exec loop).
+if [[ ! -e "$cass_real" ]] && head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+  echo "WARN: cass wrapper detected but cass.real is missing; skipping wrapper setup" >&2
+  exit 0
+fi
+
+# Move the real binary aside, then install the wrapper at the original path.
+# Handle both fresh install and the case where CASS was updated (replaced wrapper with new binary).
+if [[ ! -e "$cass_real" ]]; then
+  # First time: move original binary to cass.real
+  if ! mv "$cass_path" "$cass_real" 2>/dev/null; then
+    echo "WARN: failed to move cass to cass.real (skipping wrapper)" >&2
+    exit 0
+  fi
+  chmod +x "$cass_real" 2>/dev/null || true
+elif ! head -n 2 "$cass_path" 2>/dev/null | grep -q "ACFS CASS WRAPPER"; then
+  # cass.real exists but current cass is NOT our wrapper.
+  # Only update cass.real if cass is a binary (not a script).
+  # Safety: if it's a script (starts with #!), don't overwrite the real binary.
+  if [[ "$(head -c 2 "$cass_path" 2>/dev/null || true)" == "#!" ]]; then
+    echo "WARN: cass is a script but not our wrapper (skipping cass.real update)" >&2
+  else
+    # cass is a binary - safe to update cass.real
+    if ! mv "$cass_path" "$cass_real" 2>/dev/null; then
+      echo "WARN: failed to update cass.real with new binary (skipping wrapper)" >&2
+      exit 0
+    fi
+    chmod +x "$cass_real" 2>/dev/null || true
+  fi
+fi
+
+if ! cat > "$cass_path" <<'EOF'
+#!/usr/bin/env bash
+# ACFS CASS WRAPPER (compat): adds `cass robot <subcommand>` support for older NTM.
+set -euo pipefail
+
+real="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)/cass.real"
+if [[ ! -x "$real" ]]; then
+  echo "ERROR: cass.real not found at: $real" >&2
+  exit 127
+fi
+
+if [[ $# -gt 0 && "${1:-}" == "robot" ]]; then
+  shift || true
+
+  if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOT'
+Usage: cass robot <subcommand> [args...]
+
+Compat wrapper installed by ACFS.
+Translates:
+  cass robot <subcommand> ...  ->  cass <subcommand> ... --robot
+
+Examples:
+  cass robot search "error handling" --limit 10
+  cass search "error handling" --robot --limit 10
+EOT
+    exit 0
+  fi
+
+  for arg in "$@"; do
+    if [[ "$arg" == "--robot" ]]; then
+      exec "$real" "$@"
+    fi
+  done
+
+  exec "$real" "$@" --robot
+fi
+
+exec "$real" "$@"
+EOF
+then
+  echo "WARN: failed to write cass wrapper (skipping)" >&2
+  exit 0
+fi
+chmod +x "$cass_path" 2>/dev/null || true
+
+if ! cass robot search --dry-run "acfs-wrapper-test" >/dev/null 2>&1; then
+  echo "WARN: cass wrapper installed, but cass robot still failing" >&2
+fi
+
+exit 0
+INSTALL_STACK_CASS
+        then
+            log_error "stack.cass: install command failed: # Install a small compatibility wrapper for older tooling (e.g., NTM v1.2.0)"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: cass --help || cass --version (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CASS'
+cass --help || cass --version
+INSTALL_STACK_CASS
+        then
+            log_error "stack.cass: verify failed: cass --help || cass --version"
+            return 1
+        fi
+    fi
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify (optional): cass robot search --dry-run \"acfs-wrapper-test\" (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CASS'
+cass robot search --dry-run "acfs-wrapper-test"
+INSTALL_STACK_CASS
+        then
+            log_warn "Optional verify failed: stack.cass"
+        fi
+    fi
+
+    log_success "stack.cass installed"
+}
+
+# Procedural memory for agents (cass-memory)
+install_stack_cm() {
+    local module_id="stack.cm"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.cm"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.cm"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="cm"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.cm: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s' '--' '--easy-mode' '--verify'; then
+                            install_success=true
+                        else
+                            log_error "stack.cm: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.cm: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.cm: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.cm: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.cm: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.cm"
+                false
+            fi
+        }; then
+            log_error "stack.cm: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: cm --version (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CM'
+cm --version
+INSTALL_STACK_CM
+        then
+            log_error "stack.cm: verify failed: cm --version"
+            return 1
+        fi
+    fi
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify (optional): cm doctor --json (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CM'
+cm doctor --json
+INSTALL_STACK_CM
+        then
+            log_warn "Optional verify failed: stack.cm"
+        fi
+    fi
+
+    log_success "stack.cm installed"
+}
+
+# Instant auth switching for agent CLIs
+install_stack_caam() {
+    local module_id="stack.caam"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.caam"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verified installer: stack.caam"
+    else
+        if ! {
+            # Try security-verified install (no unverified fallback; fail closed)
+            local install_success=false
+
+            if acfs_security_init; then
+                # Check if KNOWN_INSTALLERS is available as an associative array (declare -A)
+                # The grep ensures we specifically have an associative array, not just any variable
+                if declare -p KNOWN_INSTALLERS 2>/dev/null | grep -q 'declare -A'; then
+                    local tool="caam"
+                    local url=""
+                    local expected_sha256=""
+
+                    # Safe access with explicit empty default
+                    url="${KNOWN_INSTALLERS[$tool]:-}"
+                    if ! expected_sha256="$(get_checksum "$tool")"; then
+                        log_error "stack.caam: get_checksum failed for tool '$tool'"
+                        expected_sha256=""
+                    fi
+
+                    if [[ -n "$url" ]] && [[ -n "$expected_sha256" ]]; then
+                        if verify_checksum "$url" "$expected_sha256" "$tool" | run_as_target_runner 'bash' '-s'; then
+                            install_success=true
+                        else
+                            log_error "stack.caam: verify_checksum or installer execution failed"
+                        fi
+                    else
+                        if [[ -z "$url" ]]; then
+                            log_error "stack.caam: KNOWN_INSTALLERS[$tool] not found"
+                        fi
+                        if [[ -z "$expected_sha256" ]]; then
+                            log_error "stack.caam: checksum for '$tool' not found"
+                        fi
+                    fi
+                else
+                    log_error "stack.caam: KNOWN_INSTALLERS array not available"
+                fi
+            else
+                log_error "stack.caam: acfs_security_init failed - check security.sh and checksums.yaml"
+            fi
+
+            # No unverified fallback: verified install is required
+            if [[ "$install_success" = "true" ]]; then
+                true
+            else
+                log_error "Verified install failed for stack.caam"
+                false
+            fi
+        }; then
+            log_error "stack.caam: verified installer failed"
+            return 1
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: caam status || caam --help (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_CAAM'
+caam status || caam --help
+INSTALL_STACK_CAAM
+        then
+            log_error "stack.caam: verify failed: caam status || caam --help"
+            return 1
+        fi
+    fi
+
+    log_success "stack.caam installed"
+}
+
+# Two-person rule for dangerous commands (optional guardrails)
+install_stack_slb() {
+    local module_id="stack.slb"
+    acfs_require_contract "module:${module_id}" || return 1
+    log_step "Installing stack.slb"
+
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: install: mkdir -p ~/go/bin (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_SLB'
+mkdir -p ~/go/bin
+cd /tmp && rm -rf slb_build
+git clone --depth 1 https://github.com/Dicklesworthstone/simultaneous_launch_button.git slb_build
+cd slb_build && go build -o ~/go/bin/slb ./cmd/slb
+rm -rf /tmp/slb_build
+# Add ~/go/bin to PATH if not already present
+if ! grep -q 'export PATH=.*\$HOME/go/bin' ~/.zshrc 2>/dev/null; then
+  echo '' >> ~/.zshrc
+  echo '# Go binaries' >> ~/.zshrc
+  echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
+fi
+INSTALL_STACK_SLB
+        then
+            log_warn "stack.slb: install command failed: mkdir -p ~/go/bin"
+            if type -t record_skipped_tool >/dev/null 2>&1; then
+              record_skipped_tool "stack.slb" "install command failed: mkdir -p ~/go/bin"
+            elif type -t state_tool_skip >/dev/null 2>&1; then
+              state_tool_skip "stack.slb"
+            fi
+            return 0
+        fi
+    fi
+
+    # Verify
+    if [[ "${DRY_RUN:-false}" = "true" ]]; then
+        log_info "dry-run: verify: export PATH=\"\$HOME/go/bin:\$PATH\" && slb >/dev/null 2>&1 || slb --help >/dev/null 2>&1 (target_user)"
+    else
+        if ! run_as_target_shell <<'INSTALL_STACK_SLB'
+export PATH="$HOME/go/bin:$PATH" && slb >/dev/null 2>&1 || slb --help >/dev/null 2>&1
+INSTALL_STACK_SLB
+        then
+            log_warn "stack.slb: verify failed: export PATH=\"\$HOME/go/bin:\$PATH\" && slb >/dev/null 2>&1 || slb --help >/dev/null 2>&1"
+            if type -t record_skipped_tool >/dev/null 2>&1; then
+              record_skipped_tool "stack.slb" "verify failed: export PATH=\"\$HOME/go/bin:\$PATH\" && slb >/dev/null 2>&1 || slb --help >/dev/null 2>&1"
+            elif type -t state_tool_skip >/dev/null 2>&1; then
+              state_tool_skip "stack.slb"
+            fi
+            return 0
+        fi
+    fi
+
+    log_success "stack.slb installed"
+}
+
+# Install all stack modules
+install_stack() {
+    log_section "Installing stack modules"
+    install_stack_ntm
+    install_stack_mcp_agent_mail
+    install_stack_ultimate_bug_scanner
+    install_stack_beads_viewer
+    install_stack_cass
+    install_stack_cm
+    install_stack_caam
+    install_stack_slb
+}
+
+# Run if executed directly
+if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
+    install_stack
+fi
