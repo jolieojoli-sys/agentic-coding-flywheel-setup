@@ -2681,3 +2681,7 @@ Please don't take this the wrong way, but I do not accept outside contributions 
 <div align="center">
   <sub>Created by <a href="https://x.com/doodlestein">Jeffrey Emanuel</a> (<a href="https://github.com/Dicklesworthstone">@Dicklesworthstone</a>) for the agentic coding community.</sub>
 </div>
+
+## Deployment
+- Deployed to Vercel: https://acfs-web.vercel.app
+
