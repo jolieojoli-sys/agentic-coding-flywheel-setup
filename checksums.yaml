@@ -1,4 +1,4 @@
-# checksums.yaml - Auto-generated 2026-07-08T01:55:05+00:00
+# checksums.yaml - Auto-generated 2026-07-08T22:56:37+00:00
 # Run: ./scripts/lib/security.sh --update-checksums
 
 installers:
@@ -12,7 +12,7 @@ installers:
 
   mcp_agent_mail:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail/main/scripts/install.sh"
-    sha256: "98b662dd5f40b8a3909f70f30c93c6e509aad00f01203c8b1e48fa4f02e88fbc"
+    sha256: "FETCH_FAILED"
 
   claude:
     url: "https://claude.ai/install.sh"
@@ -36,7 +36,7 @@ installers:
 
   cm:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh"
-    sha256: "74ed38d0627faccd70b4afb76a341b89fddd2670ae96d3fa5e1565b94049dec3"
+    sha256: "FETCH_FAILED"
 
   caam:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_account_manager/main/install.sh"
@@ -60,7 +60,7 @@ installers:
 
   bv:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh"
-    sha256: "46b6c8a3c90e59b249a8475aa0fea9dbec97527eba0f57aa779d509cc9140270"
+    sha256: "FETCH_FAILED"
 
   ohmyzsh:
     url: "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
