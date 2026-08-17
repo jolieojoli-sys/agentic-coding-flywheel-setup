@@ -1,4 +1,4 @@
-# checksums.yaml - Auto-generated 2026-08-15T06:22:12+00:00
+# checksums.yaml - Auto-generated 2026-08-17T16:17:37+00:00
 # Run: ./scripts/lib/security.sh --update-checksums
 
 installers:
@@ -12,7 +12,7 @@ installers:
 
   mcp_agent_mail:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail/main/scripts/install.sh"
-    sha256: "98b662dd5f40b8a3909f70f30c93c6e509aad00f01203c8b1e48fa4f02e88fbc"
+    sha256: "FETCH_FAILED"
 
   claude:
     url: "https://claude.ai/install.sh"
@@ -32,7 +32,7 @@ installers:
 
   ntm:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/ntm/main/install.sh"
-    sha256: "46e25984f382a150f85fa65bb71d109a248d71506f53a2e64337409ac54330b6"
+    sha256: "FETCH_FAILED"
 
   cm:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh"
@@ -48,7 +48,7 @@ installers:
 
   slb:
     url: "https://raw.githubusercontent.com/Dicklesworthstone/simultaneous_launch_button/main/scripts/install.sh"
-    sha256: "194a851184ba659ba6fa946aeab180f5daaff619ef040e61aca8c302ca30e189"
+    sha256: "FETCH_FAILED"
 
   nvm:
     url: "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh"
